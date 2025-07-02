@@ -488,7 +488,7 @@ class GalacticVoiceAgent(Agent):
         return prompt
 
     @function_tool()
-    async def handle_diy_objection():
+    async def handle_diy_objection(self):
         """
         Responds when customer claims they can handle debt relief themselves
         without paying for services.
@@ -503,7 +503,7 @@ class GalacticVoiceAgent(Agent):
         return prompt
 
     @function_tool()
-    async def handle_call_me_later():
+    async def handle_call_me_later(self):
         """
         Manages situations where customer wants to postpone the conversation,
         attempting to keep them engaged if they have qualifying debt.
@@ -533,7 +533,7 @@ class GalacticVoiceAgent(Agent):
         """
         return prompt
 
-    @function_tool
+    @function_tool()
     async def handle_credit_impact(self):
         """
         Addresses customer concerns about how the program will affect
@@ -549,8 +549,8 @@ class GalacticVoiceAgent(Agent):
         """
         return prompt
 
-    @function_tool
-    async def handle_is_this_a_loan():
+    @function_tool()
+    async def handle_is_this_a_loan(self):
         """
         Clarifies that the program is not a loan when customers
         express concern about taking on new debt.
