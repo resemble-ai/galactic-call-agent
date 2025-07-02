@@ -77,6 +77,19 @@ class GalacticVoiceAgent(Agent):
     - **"What about taxes?"** → Use: handle_tax_consequences
     - **Mentions excluded loan types** → Use: handle_excluded_loans
     
+    ### Financial Concerns:
+    - **"I can't afford anything"** → Use: handle_cannot_afford
+    - **"What's the catch?"** → Use: handle_whats_the_catch
+    - **"I can do this myself"** → Use: handle_diy_objection
+    - **"Is this a loan?"** → Use: handle_is_this_a_loan
+
+    ### Timing/Delay Tactics:
+    - **"Call me later"** → Use: handle_call_me_later
+    - **"I've already handled this"** → Use: handle_already_handled
+
+    ### Program Impact Questions:
+    - **"Will this hurt my credit?"** → Use: handle_credit_impact
+    
     ## Important Behavioral Guidelines:
 
     ### When to End the Call Immediately:
@@ -439,6 +452,115 @@ class GalacticVoiceAgent(Agent):
         report forgiven debt to the IRS, but recommend they consult 
         a CPA if they receive a 1099 form. Be clear you're not 
         providing tax advice.
+        """
+        return prompt
+
+    # ========================================================================================================
+    # ========================================================================================================
+    @function_tool()
+    async def handle_cannot_afford(self):
+        """
+        Responds when customer says they can't afford anything right now,
+        addressing their financial concerns about taking on new obligations.
+        """
+
+        prompt = """
+        You should empathetically acknowledge their struggle and explain 
+        that's exactly why you're calling. Emphasize this program is 
+        designed to reduce their overall monthly obligation, not add to it. 
+        Clarify it's not a loan but a way to regain control of their finances.
+        """
+        return prompt
+
+    @function_tool()
+    async def handle_whats_the_catch(self):
+        """
+        Addresses customer skepticism when they ask what the catch is,
+        building trust by explaining the straightforward nature of the program.
+        """
+
+        prompt = """
+        You should reassure them there's no catch - just an option for 
+        individuals in hardship to lower what they owe and make it manageable 
+        again. Explain you're simply checking to see if they qualify, with 
+        no hidden agenda.
+        """
+        return prompt
+
+    @function_tool()
+    async def handle_diy_objection():
+        """
+        Responds when customer claims they can handle debt relief themselves
+        without paying for services.
+        """
+
+        prompt = """
+        You should acknowledge that some people do try on their own, but 
+        explain they usually don't get the same results. Emphasize that 
+        your team works with creditors every day and knows how to make 
+        these programs work in their favor.
+        """
+        return prompt
+
+    @function_tool()
+    async def handle_call_me_later():
+        """
+        Manages situations where customer wants to postpone the conversation,
+        attempting to keep them engaged if they have qualifying debt.
+        """
+
+        prompt = """
+        You should politely agree to call back but first ask if they're 
+        dealing with unsecured debt right now or have already taken care 
+        of it. If they confirm they have credit card debts, try to keep 
+        them on the line by emphasizing it will only take a few minutes 
+        and could save them thousands.
+        """
+        return prompt
+
+    @function_tool()
+    async def handle_already_handled(self):
+        """
+        Responds when customer claims they've already got their debt
+        situation handled, exploring if there's still opportunity to help.
+        """
+
+        prompt = """
+        You should respond positively and ask who they're working with. 
+        Mention that sometimes people compare programs and realize they 
+        can save more or shorten the term with your program. Don't be 
+        pushy but plant the seed of potential better options.
+        """
+        return prompt
+
+    @function_tool
+    async def handle_credit_impact(self):
+        """
+        Addresses customer concerns about how the program will affect
+        their credit score.
+        """
+
+        prompt = """
+        You should be honest that their credit may be impacted, but 
+        point out that most people you help already have high balances 
+        affecting their score. Emphasize your goal is long-term 
+        improvement, not a quick fix. Focus on the bigger picture of 
+        becoming debt-free.
+        """
+        return prompt
+
+    @function_tool
+    async def handle_is_this_a_loan():
+        """
+        Clarifies that the program is not a loan when customers
+        express concern about taking on new debt.
+        """
+
+        prompt = """
+        You should clearly state it's not a loan and there's no new 
+        credit line. Explain you simply work with what they currently 
+        owe and restructure it into something manageable. Emphasize 
+        this is about reducing debt, not creating more.
         """
         return prompt
 
