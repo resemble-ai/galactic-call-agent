@@ -1,0 +1,14 @@
+livekit>=1.0
+livekit-agents[openai,deepgram,cartesia,silero,turn_detector,resemble,groq,elevenlabs]==1.1.3
+livekit-plugins-noise-cancellation~=0.2
+livekit-plugins-resemble>=1.0.0
+livekit-plugins-openai>=0.10.17
+livekit-plugins-cartesia>=0.4.7
+livekit-plugins-deepgram>=0.6.17
+livekit-plugins-silero>=0.7.4
+livekit-plugins-elevenlabs~=1.0
+livekit-plugins-turn-detector>=1.0.0
+livekit-plugins-groq~=1.0
+livekit-plugins-google~=1.0
+python-dotenv~=1.0
+requests
