@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 from dotenv import load_dotenv
 import os
@@ -5,10 +7,13 @@ from livekit import agents, api, rtc
 from livekit.agents import (
     AgentSession,
     Agent,
+    JobRequest,
+    MetricsCollectedEvent,
     RoomInputOptions,
     RunContext,
     function_tool,
     get_job_context,
+    metrics,
 )
 from livekit.plugins import (
     openai,
@@ -20,112 +25,115 @@ from livekit.plugins import (
     elevenlabs,
 )
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.protocol import sip as proto_sip
 
 load_dotenv(dotenv_path=".env.local")
-print(os.getenv("RESEMBLE_API_KEY"))
 
-logger = logging.getLogger("outbound-caller")
+logger = logging.getLogger("inbound-caller")
 logger.setLevel(logging.DEBUG)
+
+ENV = os.getenv("ENVIRONMENT")
+IS_DEV = ENV == "development"
+
+if IS_DEV:
+    from metrics_csv_logger import MetricsCSVLogger
 
 
 class GalacticVoiceAgent(Agent):
     instruction = """
-    You are a professional debt relief specialist calling from Galactic Consumer Service. Your goal is to help qualified customers reduce their credit card debt through legitimate debt relief programs.
+    You are a professional debt relief specialist from Galactic Consumer Service. Your goal is to:
+    1. Verify the customer has credit card debt
+    2. Collect three pieces of information
+    3. Transfer qualified customers to a specialist
 
-    ## Initial Greeting
-    Start the conversation warmly and professionally:
-    "Good [Morning/Afternoon/Evening], Mr./Ms. [Last Name]. My name is [Your Name] and I'm calling from Galactic Consumer Service. I'm reaching out to you today because per our records it looks like you still have more than seven thousand dollars in credit card debt and you've been making your monthly payments on time. Is that right?"
+    ## CRITICAL CONVERSATION FLOW:
 
-    ## These questions are mandatory to ask, make sure in no circumstances these are missed
-    After the customer responds, you need to gather three essential pieces of information:
+    1. **Initial Greeting**: 
+    "Good [time], Mr./Ms. [Name]. I'm calling from Galactic Consumer Service. 
+    Per our records, it looks like you have more than $7,000 in credit card debt 
+    and you've been making payments on time. Is that correct?"
 
-    1. **Total Debt Amount** - Use function: get_total_debt_amount
-    - Ask about their total credit card debt in a conversational manner
-    - This determines if they meet the $7,000 minimum threshold
+    2. **If YES or confirms debt**: Ask all three questions together:
+    "Great! To see how much we can save you, I need to verify three things:
+    - Your rough total credit card debt?
+    - How many credit cards with balances?
+    - Are you employed, self-employed, or retired?"
 
-    2. **Number of Credit Cards** - Use function: get_credit_card_count  
-    - Ask for a rough estimate of how many cards have balances
-    - This helps assess the complexity of their situation
+    3. **After getting all answers**: Push for immediate transfer:
+    "Perfect! Based on your situation, you qualify for significant savings. 
+    I need to get you to a specialist RIGHT NOW to lock in these rates. 
+    Can I transfer you? It takes just 10 seconds..."
 
-    3. **Employment Status** - Use function: get_employment_status
-    - Determine if they're employed, self-employed, or retired
-    - This confirms their ability to make monthly payments
+    4. **If they consent (Yes/OK/Sure)**: Use transfer_call_to_galactic
 
-    ## Edge Scenarios - Use Appropriate Functions:
+    ## OBJECTION HANDLING:
+    - For ANY objection, use the appropriate handle_[objection] function
+    - After handling, ALWAYS return to asking for transfer consent
+    - Be persistent but professional
 
-    ### Initial Resistance/Objections:
-    - **"I don't have any debt"** → Use: handle_no_debt
-    - **"How did you get my information?"** → Use: handle_info_source_question
-    - **"Is this a scam?"** → Use: handle_scam_concern
-    - **"I'm not interested"** → Use: handle_not_interested
-    - **"Stop calling me repeatedly"** → Use: handle_repeated_calls
-    - **Angry or suspicious behavior** → Use: handle_angry_suspicious
-    - **"Wrong number/Not me"** → Use: handle_wrong_number
-    - **"None of your business"** → Use: handle_none_of_your_business
-    - **"I'm on the do-not-call list"** → Use: handle_do_not_call
-
-    ### Verification/Trust Building:
-    - **"What's your company address/phone?"** → Use: handle_company_info_request
-    - **"I want everything in writing"** → Use: handle_written_info_request
-
-    ### Program-Specific Questions:
-    - **"How does this work?"** → Use: handle_how_it_works
-    - **"How does the program work?"** → Use: handle_program_details
-    - **"I'm already in a program"** → Use: handle_existing_program
-    - **"Do I need to close all my cards?"** → Use: handle_card_closure_question
-    - **"How do you save 40%?"** → Use: handle_savings_question
-    - **"What about taxes?"** → Use: handle_tax_consequences
-    - **Mentions excluded loan types** → Use: handle_excluded_loans
-    
-    ### Financial Concerns:
-    - **"I can't afford anything"** → Use: handle_cannot_afford
-    - **"What's the catch?"** → Use: handle_whats_the_catch
-    - **"I can do this myself"** → Use: handle_diy_objection
-    - **"Is this a loan?"** → Use: handle_is_this_a_loan
-
-    ### Timing/Delay Tactics:
-    - **"Call me later"** → Use: handle_call_me_later
-    - **"I've already handled this"** → Use: handle_already_handled
-
-    ### Program Impact Questions:
-    - **"Will this hurt my credit?"** → Use: handle_credit_impact
-    
-    ## Important Behavioral Guidelines:
-
-    ### When to End the Call Immediately:
-    - Customer says they're on the do-not-call list (apologize and end)
-    - Customer becomes verbally abusive or threatening
-    - Customer explicitly asks to be removed after you've attempted one rebuttal
-
-    ### When to Pivot:
-    - If it's wrong number but they have debt, offer to help them instead
-    - If they're suspicious, focus on building trust before qualifying
-    - If they want written info, offer to qualify them first for relevant materials
-
-    ### Conversation Flow:
-    - Always acknowledge their concern before responding
-    - Use transitional phrases like "I understand" or "That's a fair question"
-    - Keep responses concise but complete
-    - Don't repeat the same rebuttal if they've already rejected it
-
-    ## Qualification Summary
-    After gathering all three pieces of information, provide a brief summary:
-    "OK, alright, thanks for your answers. Based on what you've shared - [summarize their debt amount, number of cards, and employment status] - we have multiple options where your savings can be significant, and your monthly payments can be considerably lower."
-
-    ## Call Conclusion Scenarios:
-    ### If Qualified and Interested:
-    "Great! The next step is to connect you with one of our debt specialists who can review your specific situation and show you exactly how much you could save. They'll go over all your options with no obligation. Would you prefer to speak with them now, or should we schedule a time that works better for you?"
-
-    ## Important Reminders:
-    - Always maintain a helpful, consultative tone rather than pushy sales approach
-    - If unsure about a response, err on the side of being helpful and transparent
-    - Never make promises about specific savings without proper qualification
-    - Respect their time and decision if they're not interested
-    - End every call professionally, regardless of outcome
+    ## REMEMBER:
+    - Don't use multiple functions in sequence unless necessary
+    - Get all three pieces of info before attempting transfer
+    - Always get explicit consent before transferring
     """
 
     def __init__(self) -> None:
         super().__init__(instructions=self.instruction)
+
+    async def transfer_call(
+        self, participant_identity: str, transfer_to: str, room_name: str
+    ):
+        """
+        Transfer the SIP call to another number.
+
+        Args:
+            participant_identity (str): The identity of the participant.
+            transfer_to (str): The phone number to transfer the call to.
+        """
+        async with api.LiveKitAPI() as livekit_api:
+            transfer_request = proto_sip.TransferSIPParticipantRequest(
+                participant_identity=participant_identity,
+                room_name=room_name,
+                transfer_to=transfer_to,
+                play_dialtone=True,
+            )
+            logger.debug(f"Transfer request: {transfer_request}")
+
+            # Transfer caller
+            await livekit_api.sip.transfer_sip_participant(transfer_request)
+            logger.info(f"Successfully transferred participant {participant_identity}")
+            await self.hangup()
+
+    @function_tool()
+    async def transfer_call_to_galactic(self):
+        """Transfer the call to the Galactic team."""
+        job_ctx = get_job_context()
+        room = job_ctx.room
+
+        # Find the SIP participant in the room
+        sip_participant = None
+        for participant in room.remote_participants.values():
+            if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+                sip_participant = participant
+                break
+
+        if not sip_participant:
+            logger.error("No SIP participant found in room")
+            return "Unable to transfer call - no SIP participant found"
+
+        identity = sip_participant.identity  # Use SIP participant's identity
+        room_name = room.name
+        transfer_number = f"tel:{os.getenv('TRANSFER_PHONE_NUMBER')}"
+
+        logger.info(f"SIP Participant Identity: {identity}")
+        logger.info(f"Transfer number: {transfer_number}")
+        logger.info(f"Room name: {room_name}")
+
+        await self.transfer_call(identity, transfer_number, room_name)
+        return f"Transferring your call. Hang in there."
+
+    # ========================================================================================================
+    # ========================================================================================================
 
     @function_tool()
     async def get_total_debt_amount(self):
@@ -594,12 +602,45 @@ class GalacticVoiceAgent(Agent):
 
 
 async def entrypoint(ctx: agents.JobContext):
+    await ctx.connect()
+    phone_number = None
+
+    # Wait for a SIP participant to join
+    try:
+        sip_participant = await ctx.wait_for_participant(
+            kind=rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+        )
+
+        if sip_participant.attributes:
+            # For Twilio SIP trunking, the phone number is in 'sip.phoneNumber'
+            phone_number = sip_participant.attributes.get("sip.phoneNumber")
+
+            if phone_number:
+                # Clean up the phone number (remove + if needed for API)
+                phone_number = phone_number.strip()
+                logger.info(f"Extracted phone number: {phone_number}")
+            else:
+                logger.warning("sip.phoneNumber not found in attributes")
+                logger.info(
+                    f"Available attribute fields: {list(sip_participant.attributes.keys())}"
+                )
+
+        if phone_number:
+            logger.info(f"Ready to fetch lead info for: {phone_number}")
+
+    except asyncio.TimeoutError:
+        logger.error("Timeout waiting for SIP participant")
+    except Exception as e:
+        logger.error(f"Error waiting for participant: {e}")
+
     session = AgentSession(
-        stt=deepgram.STT(model="nova-3", language="multi"),
-        llm=openai.LLM(model="gpt-4o-mini"),
-        tts=elevenlabs.TTS(
-            api_key="sk_e09e83bf20fd499d5b983625b670e9bb6484ea3b4da70f1e",
-            voice_id="NwhlWbOasPHy5FAy7b7U",
+        stt=deepgram.STT(model="nova-2-phonecall"),
+        llm=openai.LLM.with_cerebras(
+            model="llama-3.3-70b",
+        ),
+        tts=resemble.TTS(
+            api_key=os.getenv("RESEMBLE_API_KEY"),
+            voice_uuid="55592656",
         ),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
@@ -616,14 +657,77 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    await ctx.connect()
+    usage_collector = metrics.UsageCollector()
+
+    if IS_DEV:
+        csv_logger = MetricsCSVLogger()
+        csv_filename = csv_logger.get_csv_filename("llm_provider", "llm_model")
+        csv_logger.initialize_csv(csv_filename)
+        logger.info(f"Metrics will be logged to: {csv_filename}")
+
+    @session.on("metrics_collected")
+    def _on_metrics_collected(ev: MetricsCollectedEvent):
+        # Log the raw metric for debugging
+        logger.info(f"Metrics: {ev.metrics}")
+
+        # Collect for summary
+        usage_collector.collect(ev.metrics)
+
+        if IS_DEV:
+            asyncio.create_task(
+                asyncio.to_thread(csv_logger.write_metrics, csv_filename, ev.metrics)
+            )
+
+    async def log_usage():
+        summary = usage_collector.get_summary()
+        logger.error(f"Usage: {summary}")
+
+    ctx.add_shutdown_callback(log_usage)
 
     await session.generate_reply()
+
+
+# async def job_request_handler(req: JobRequest):
+#     logger.info(f"Received job request: {req}")
+#     logger.info(f"Received job request: {req.id}")
+#     logger.info(f"Room: {req.room.name}")
+#     logger.info(f"Participant: {req.job}")
+
+#     try:
+#         # Extract phone number from the job metadata or participant info
+#         # The phone number might be in req.publisher attributes or metadata
+#         phone_number = None
+
+#         if req.publisher and req.publisher.attributes:
+#             phone_number = req.publisher.attributes.get("sip.phoneNumber")
+
+#         if phone_number:
+#             logger.info(f"Fetching lead info for: {phone_number}")
+
+#             # Make your API call while the call is still ringing
+#             # lead_info = await fetch_lead_info(phone_number)
+
+#             # Accept the job only after getting lead info
+#             await req.accept(
+#                 name="GalacticVoiceAgent",
+#                 metadata=json.dumps({"lead_info": "lead_info"}),
+#             )
+#             logger.info("Job accepted with lead info")
+#         else:
+#             # Reject if no phone number found
+#             await req.reject()
+#             logger.warning("Job rejected - no phone number found")
+
+#     except Exception as e:
+#         logger.error(f"Error processing job request: {e}")
+#         await req.reject()
 
 
 if __name__ == "__main__":
     agents.cli.run_app(
         agents.WorkerOptions(
-            entrypoint_fnc=entrypoint, agent_name="incoming-call-agent"
+            entrypoint_fnc=entrypoint,
+            agent_name="incoming-call-agent",
+            # request_fnc=job_request_handler,
         )
     )
