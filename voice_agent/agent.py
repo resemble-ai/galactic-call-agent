@@ -28,6 +28,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.protocol import sip as proto_sip
 
 from get_lead_info import get_lead_info
+from update_lead import update_lead
 
 load_dotenv(dotenv_path=".env.local")
 
@@ -43,8 +44,9 @@ if IS_DEV:
 
 class GalacticVoiceAgent(Agent):
 
-    def __init__(self, name) -> None:
+    def __init__(self, name, lead_id) -> None:
         self.name = name
+        self.lead_id = lead_id
         super().__init__(instructions=self._generate_instruction())
 
     def _generate_instruction(self):
@@ -64,9 +66,8 @@ class GalacticVoiceAgent(Agent):
         1. **Initial Greeting**: 
         {greeting}
         # Only after user validates its identity, then go further otherwise "end_call"
-            I'm calling from Galactic Consumer Service. 
-            Per our records, it looks like you have more than $7,000 in credit card debt 
-            and you've been making payments on time. Is that correct?"
+        Per our records, it looks like you have more than $7,000 in credit card debt 
+        and you've been making payments on time. Is that correct?"
 
         2. **If YES or confirms debt**: Ask all three questions together:
         "Great! To see how much we can save you, I need to verify three things:
@@ -114,6 +115,7 @@ class GalacticVoiceAgent(Agent):
             # Transfer caller
             await livekit_api.sip.transfer_sip_participant(transfer_request)
             logger.info(f"Successfully transferred participant {participant_identity}")
+            await update_lead(lead_id=self.lead_id, comments="QUALIFIED")
             await self.hangup()
 
     @function_tool()
@@ -628,8 +630,8 @@ def prewarm_fnc(proc: agents.JobProcess):
 
 
 async def entrypoint(ctx: agents.JobContext):
-    await ctx.connect()
     phone_number = None
+    await ctx.connect()
 
     # Wait for a SIP participant to join
     try:
@@ -644,7 +646,7 @@ async def entrypoint(ctx: agents.JobContext):
             if phone_number:
                 # Clean up the phone number (remove + if needed for API)
                 phone_number = "8052226101" if IS_DEV else phone_number.strip()
-                result = get_lead_info(phone_number)
+                result = await get_lead_info(phone_number)
                 logger.info(f"Result: {result}")
             else:
                 logger.warning("sip.phoneNumber not found in attributes")
@@ -677,7 +679,8 @@ async def entrypoint(ctx: agents.JobContext):
     await session.start(
         room=ctx.room,
         agent=GalacticVoiceAgent(
-            name=f"{result['first_name']} {result['last_name']}" if result else None
+            name=f"{result['first_name']} {result['last_name']}" if result else None,
+            lead_id=result["lead_id"] if result else None,
         ),
         room_input_options=RoomInputOptions(
             # LiveKit Cloud enhanced noise cancellation

@@ -1,15 +1,16 @@
 import os
-import requests
-from typing import Dict, Optional
+import asyncio
+import aiohttp
+from typing import Dict, Optional, List
 
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=".env.local")
 
 
-def get_lead_info(phone_number: str) -> Optional[Dict[str, str]]:
+async def get_lead_info(phone_number: str) -> Optional[Dict[str, str]]:
     """
-    Makes a GET API call to retrieve lead information based on phone number.
+    Makes an async GET API call to retrieve lead information based on phone number.
 
     Args:
         phone_number (str): The phone number to query
@@ -28,7 +29,7 @@ def get_lead_info(phone_number: str) -> Optional[Dict[str, str]]:
 
     params = {
         "source": "resembleai",
-        "user": "resembleai",
+        "user": "resembleaiapi",
         "pass": api_pass,
         "function": "lead_all_info",
         "phone_number": phone_number,
@@ -71,36 +72,59 @@ def get_lead_info(phone_number: str) -> Optional[Dict[str, str]]:
     ]
 
     try:
-        # Make GET request
-        response = requests.get(url, params=params)
-        response.raise_for_status()
+        # Create aiohttp session and make GET request
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as response:
+                response.raise_for_status()
 
-        # Parse the pipe-delimited response
-        data = response.text.strip()
+                # Read response text
+                data = await response.text()
+                data = data.strip()
 
-        if not data:
-            return None
+                if not data:
+                    return None
 
-        # Split by newline to get multiple data items (if any)
-        lines = data.split("\n")
+                # Split by newline to get multiple data items (if any)
+                lines = data.split("\n")
 
-        if not lines:
-            return None
+                if not lines:
+                    return None
 
-        # Get first line (first data item)
-        first_line = lines[0]
-        values = first_line.split("|")
+                # Get first line (first data item)
+                first_line = lines[0]
+                values = first_line.split("|")
 
-        # Create dictionary from field names and values
-        if len(values) == len(field_names):
-            result = dict(zip(field_names, values))
-            return result
-        else:
-            return None
+                # Create dictionary from field names and values
+                if len(values) == len(field_names):
+                    result = dict(zip(field_names, values))
+                    return result
+                else:
+                    return None
 
-    except requests.RequestException as e:
+    except aiohttp.ClientError as e:
         print(f"Error making API request: {e}")
         return None
     except Exception as e:
         print(f"Unexpected error: {e}")
         return None
+
+
+# Example usage
+async def main():
+    # Example: Get info for a single lead
+    lead_info = await get_lead_info("8052226101")
+
+    if lead_info:
+        print(f"Lead found: {lead_info['first_name']} {lead_info['last_name']}")
+        print(f"Email: {lead_info['email']}")
+        print(f"Lead ID: {lead_info['lead_id']}")
+    else:
+        print("No lead found for this phone number")
+
+
+if __name__ == "__main__":
+    # Set the environment variable (in production, this would be set externally)
+    # os.environ['VICIDIAL_API_PASS'] = 'your_password_here'
+
+    # Run the async main function
+    asyncio.run(main())
