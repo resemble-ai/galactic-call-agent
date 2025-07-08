@@ -47,6 +47,7 @@ class GalacticVoiceAgent(Agent):
     def __init__(self, name, lead_id) -> None:
         self.name = name
         self.lead_id = lead_id
+        self.has_all_info = False
         super().__init__(instructions=self._generate_instruction())
 
     def _generate_instruction(self):
@@ -56,42 +57,49 @@ class GalacticVoiceAgent(Agent):
             greeting = "Hey there, I'm calling from Galactic Consumer Service regarding your account."
 
         return f"""
-        You are a professional debt relief specialist from Galactic Consumer Service. Your goal is to:
-        1. Verify the customer has credit card debt
-        2. Collect three pieces of information
-        3. Transfer qualified customers to a specialist
+            You are a professional debt relief specialist from Galactic Consumer Service. Your goal is to:
+            1. Verify the customer has credit card debt
+            2. Collect three pieces of information
+            3. Transfer qualified customers to a specialist
 
-        ## CRITICAL CONVERSATION FLOW:
+            ## CRITICAL CONVERSATION FLOW:
 
-        1. **Initial Greeting**: 
-        {greeting}
-        # Only after user validates its identity, then go further otherwise "end_call"
-        Per our records, it looks like you have more than $7,000 in credit card debt 
-        and you've been making payments on time. Is that correct?"
+            1. **Initial Greeting**: 
+            {greeting}
+            # Only after user validates its identity, then go further otherwise use "end_call"
+            Per our records, it looks like you have more than $7,000 in credit card debt 
+            and you've been making payments on time. Is that correct?"
 
-        2. **If YES or confirms debt**: Ask all three questions together:
-        "Great! To see how much we can save you, I need to verify three things:
-        - Your rough total credit card debt?
-        - How many credit cards with balances?
-        - Are you employed, self-employed, or retired?"
+            2. **If YES or confirms debt**: 
+            - Use the collect_qualification_info function ONCE
+            - The function will tell you to ask three questions
+            - Ask those questions and wait for answers
+            - DO NOT call collect_qualification_info again
 
-        3. **After getting all answers**: Push for immediate transfer:
-        "Perfect! Based on your situation, you qualify for significant savings. 
-        I need to get you to a specialist RIGHT NOW to lock in these rates. 
-        Can I transfer you? It takes just 10 seconds..."
+            3. **After getting all three answers**: 
+            "Perfect! Based on your situation, you qualify for significant savings. 
+            I need to get you to a specialist RIGHT NOW to lock in these rates. 
+            Can I transfer you? It takes just 10 seconds..."
 
-        4. **If they consent (Yes/OK/Sure)**: Use transfer_call_to_galactic
+            4. **If they consent (Yes/OK/Sure)**: Use transfer_call_to_galactic ONCE
 
-        ## OBJECTION HANDLING:
-        - For ANY objection, use the appropriate handle_[objection] function
-        - After handling, ALWAYS return to asking for transfer consent
-        - Be persistent but professional
+            ## IMPORTANT RULES:
+            - Only call collect_qualification_info ONCE per conversation
+            - After calling it, ask the questions it suggests and continue the conversation
+            - Do not repeatedly call the same function
+            - For objections, use the appropriate handle_[objection] function ONCE
+            - After handling objections, return to the conversation flow
 
-        ## REMEMBER:
-        - Don't use multiple functions in sequence unless necessary
-        - Get all three pieces of info before attempting transfer
-        - Always get explicit consent before transferring
-    """
+            ## OBJECTION HANDLING:
+            - For ANY objection, use the appropriate handle_[objection] function
+            - After handling, return to collecting info or pushing for transfer
+            - Be persistent but professional
+
+            ## REMEMBER:
+            - Each function should only be called ONCE when needed
+            - Get all three pieces of info before attempting transfer
+            - Always get explicit consent before transferring
+                """
 
     async def transfer_call(
         self, participant_identity: str, transfer_to: str, room_name: str
@@ -150,52 +158,14 @@ class GalacticVoiceAgent(Agent):
     # ========================================================================================================
 
     @function_tool()
-    async def get_total_debt_amount(self):
+    async def collect_qualification_info(self):
         """
-        Asks the customer to provide their total credit card debt amount.
-        This helps qualify them for the debt relief program by determining
-        if they meet the minimum $7,000 threshold.
+        Collects all three required pieces of information from the customer:
+        total debt amount, number of credit cards, and employment status.
         """
-
-        prompt = """
-        You should ask the customer about their total credit card debt 
-        in a conversational way. Request a ballpark figure using examples 
-        like $10,000, $20,000, $25,000 or more. Emphasize this is just 
-        a rough estimate off the top of their head.
-        """
-        return prompt
-
-    @function_tool()
-    async def get_credit_card_count(self):
-        """
-        Asks the customer how many credit cards they have with outstanding balances.
-        This information helps determine the complexity of their debt situation
-        and the appropriate consolidation approach.
-        """
-
-        prompt = """
-        You should ask the customer for a rough estimate of how many 
-        credit cards they owe balances on. Suggest ranges like two, 
-        three, four, or more to make it easy for them to provide a 
-        quick estimate.
-        """
-        return prompt
-
-    @function_tool()
-    async def get_employment_status(self):
-        """
-        Determines the customer's current employment situation to assess
-        their ability to make monthly payments and qualify for specific
-        debt relief programs.
-        """
-
-        prompt = """
-        You should ask if the customer is currently employed, 
-        self-employed, or retired. Ask this in a straightforward 
-        manner to quickly categorize their income situation.
-        """
-        return prompt
-
+        self.has_all_info = True  # Mark that we've attempted to collect the info
+        
+        return """Ask these three questions together: "Great! To see how much we can save you, I need to verify three things: Your rough total credit card debt? How many credit cards with balances? And are you employed, self-employed, or retired?" Then wait for their response and continue the conversation."""
     # ========================================================================================================
     # ========================================================================================================
 
@@ -625,7 +595,7 @@ def prewarm_fnc(proc: agents.JobProcess):
     proc.userdata["llm_client"] = openai.LLM.with_cerebras(model="llama-3.3-70b")
     proc.userdata["tts_client"] = resemble.TTS(
         api_key=os.getenv("RESEMBLE_API_KEY"),
-        voice_uuid="9d14839c",
+        voice_uuid="e28236ee",
     )
 
 
@@ -676,20 +646,73 @@ async def entrypoint(ctx: agents.JobContext):
         turn_detection=turn_detection,
     )
 
+    async def handle_participant_attributes_changed(
+        changed_attributes: dict, participant: rtc.Participant
+    ):
+        logger.info(
+            f"Participant {participant.identity} attributes changed: {changed_attributes}"
+        )
+
+        # Check if this is a SIP participant and if call status has changed
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+            # Check if sip.callStatus is in the changed attributes
+            if "sip.callStatus" in changed_attributes:
+                call_status = changed_attributes["sip.callStatus"]
+                logger.info(f"SIP Call Status updated: {call_status}")
+                # Log specific call status information
+                if call_status == "active":
+                    logger.info("Call is now active and connected")
+                elif call_status == "automation":
+                    logger.info("Call is now connected and dialing DTMF numbers")
+                elif call_status == "dialing":
+                    logger.info("Call is now dialing and waiting to be picked up")
+                elif call_status == "hangup":
+                    logger.info("Call has been ended by a participant")
+                    # Check if we have the agent instance and all questions answered
+                    agent = getattr(session, "agent", None)
+                    if agent is not None:
+                        if getattr(agent, "has_all_info", False):
+                            status = "QUALIFIED"
+                        else:
+                            status = "NOT_QUALIFIED"
+                    else:
+                        status = "NOT_QUALIFIED"
+
+                    print(f"status: {status}")
+                    await update_lead(
+                        lead_id=result["lead_id"] if result else "",
+                        comments=status,
+                    )
+                elif call_status == "ringing":
+                    logger.info("Inbound call is now ringing for the caller")
+
+    def on_participant_attributes_changed_handler(
+        changed_attributes: dict, participant: rtc.Participant
+    ):
+        # Handle all participant attribute changes
+        asyncio.create_task(
+            handle_participant_attributes_changed(changed_attributes, participant)
+        )
+
+    # Register event handler BEFORE starting session
+    ctx.room.on(
+        "participant_attributes_changed", on_participant_attributes_changed_handler
+    )
+    agent_instance = GalacticVoiceAgent(
+        name=f"{result['first_name']} {result['last_name']}" if result else None,
+        lead_id=result["lead_id"] if result else None,
+    )
+
     await session.start(
         room=ctx.room,
-        agent=GalacticVoiceAgent(
-            name=f"{result['first_name']} {result['last_name']}" if result else None,
-            lead_id=result["lead_id"] if result else None,
-        ),
+        agent=agent_instance,
         room_input_options=RoomInputOptions(
-            # LiveKit Cloud enhanced noise cancellation
-            # - If self-hosting, omit this parameter
-            # - For telephony applications, use `BVCTelephony` for best results
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
+    # Store reference to agent for access in event handlers
+    setattr(session, "agent", agent_instance)
     usage_collector = metrics.UsageCollector()
 
     if IS_DEV:
