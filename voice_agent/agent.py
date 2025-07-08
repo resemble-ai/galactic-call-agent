@@ -27,6 +27,8 @@ from livekit.plugins import (
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.protocol import sip as proto_sip
 
+from get_lead_info import get_lead_info
+
 load_dotenv(dotenv_path=".env.local")
 
 logger = logging.getLogger("inbound-caller")
@@ -40,45 +42,55 @@ if IS_DEV:
 
 
 class GalacticVoiceAgent(Agent):
-    instruction = """
-    You are a professional debt relief specialist from Galactic Consumer Service. Your goal is to:
-    1. Verify the customer has credit card debt
-    2. Collect three pieces of information
-    3. Transfer qualified customers to a specialist
 
-    ## CRITICAL CONVERSATION FLOW:
+    def __init__(self, name) -> None:
+        self.name = name
+        super().__init__(instructions=self._generate_instruction())
 
-    1. **Initial Greeting**: 
-    "Good [time], Mr./Ms. [Name]. I'm calling from Galactic Consumer Service. 
-    Per our records, it looks like you have more than $7,000 in credit card debt 
-    and you've been making payments on time. Is that correct?"
+    def _generate_instruction(self):
+        if self.name is not None:
+            greeting = f"Hey there, Am I speaking to {self.name}. I'm calling from Galactic Consumer Service."
+        else:
+            greeting = "Hey there, I'm calling from Galactic Consumer Service regarding your account."
 
-    2. **If YES or confirms debt**: Ask all three questions together:
-    "Great! To see how much we can save you, I need to verify three things:
-    - Your rough total credit card debt?
-    - How many credit cards with balances?
-    - Are you employed, self-employed, or retired?"
+        return f"""
+        You are a professional debt relief specialist from Galactic Consumer Service. Your goal is to:
+        1. Verify the customer has credit card debt
+        2. Collect three pieces of information
+        3. Transfer qualified customers to a specialist
 
-    3. **After getting all answers**: Push for immediate transfer:
-    "Perfect! Based on your situation, you qualify for significant savings. 
-    I need to get you to a specialist RIGHT NOW to lock in these rates. 
-    Can I transfer you? It takes just 10 seconds..."
+        ## CRITICAL CONVERSATION FLOW:
 
-    4. **If they consent (Yes/OK/Sure)**: Use transfer_call_to_galactic
+        1. **Initial Greeting**: 
+        {greeting}
+        # Only after user validates its identity, then go further otherwise "end_call"
+            I'm calling from Galactic Consumer Service. 
+            Per our records, it looks like you have more than $7,000 in credit card debt 
+            and you've been making payments on time. Is that correct?"
 
-    ## OBJECTION HANDLING:
-    - For ANY objection, use the appropriate handle_[objection] function
-    - After handling, ALWAYS return to asking for transfer consent
-    - Be persistent but professional
+        2. **If YES or confirms debt**: Ask all three questions together:
+        "Great! To see how much we can save you, I need to verify three things:
+        - Your rough total credit card debt?
+        - How many credit cards with balances?
+        - Are you employed, self-employed, or retired?"
 
-    ## REMEMBER:
-    - Don't use multiple functions in sequence unless necessary
-    - Get all three pieces of info before attempting transfer
-    - Always get explicit consent before transferring
+        3. **After getting all answers**: Push for immediate transfer:
+        "Perfect! Based on your situation, you qualify for significant savings. 
+        I need to get you to a specialist RIGHT NOW to lock in these rates. 
+        Can I transfer you? It takes just 10 seconds..."
+
+        4. **If they consent (Yes/OK/Sure)**: Use transfer_call_to_galactic
+
+        ## OBJECTION HANDLING:
+        - For ANY objection, use the appropriate handle_[objection] function
+        - After handling, ALWAYS return to asking for transfer consent
+        - Be persistent but professional
+
+        ## REMEMBER:
+        - Don't use multiple functions in sequence unless necessary
+        - Get all three pieces of info before attempting transfer
+        - Always get explicit consent before transferring
     """
-
-    def __init__(self) -> None:
-        super().__init__(instructions=self.instruction)
 
     async def transfer_call(
         self, participant_identity: str, transfer_to: str, room_name: str
@@ -601,6 +613,20 @@ class GalacticVoiceAgent(Agent):
         await self.hangup()
 
 
+def prewarm_fnc(proc: agents.JobProcess):
+    # Pre-initialize heavy components
+    proc.userdata["vad"] = silero.VAD.load()
+    # proc.userdata["turn_detection"] = MultilingualModel()
+
+    # Pre-initialize API clients (connection pooling)
+    proc.userdata["deepgram_client"] = deepgram.STT(model="nova-2-phonecall")
+    proc.userdata["llm_client"] = openai.LLM.with_cerebras(model="llama-3.3-70b")
+    proc.userdata["tts_client"] = resemble.TTS(
+        api_key=os.getenv("RESEMBLE_API_KEY"),
+        voice_uuid="9d14839c",
+    )
+
+
 async def entrypoint(ctx: agents.JobContext):
     await ctx.connect()
     phone_number = None
@@ -617,8 +643,9 @@ async def entrypoint(ctx: agents.JobContext):
 
             if phone_number:
                 # Clean up the phone number (remove + if needed for API)
-                phone_number = phone_number.strip()
-                logger.info(f"Extracted phone number: {phone_number}")
+                phone_number = "8052226101" if IS_DEV else phone_number.strip()
+                result = get_lead_info(phone_number)
+                logger.info(f"Result: {result}")
             else:
                 logger.warning("sip.phoneNumber not found in attributes")
                 logger.info(
@@ -633,22 +660,25 @@ async def entrypoint(ctx: agents.JobContext):
     except Exception as e:
         logger.error(f"Error waiting for participant: {e}")
 
+    vad = ctx.proc.userdata["vad"]
+    turn_detection = MultilingualModel()
+    stt = ctx.proc.userdata["deepgram_client"]
+    llm = ctx.proc.userdata["llm_client"]
+    tts = ctx.proc.userdata["tts_client"]
+
     session = AgentSession(
-        stt=deepgram.STT(model="nova-2-phonecall"),
-        llm=openai.LLM.with_cerebras(
-            model="llama-3.3-70b",
-        ),
-        tts=resemble.TTS(
-            api_key=os.getenv("RESEMBLE_API_KEY"),
-            voice_uuid="55592656",
-        ),
-        vad=silero.VAD.load(),
-        turn_detection=MultilingualModel(),
+        stt=stt,
+        llm=llm,
+        tts=tts,
+        vad=vad,
+        turn_detection=turn_detection,
     )
 
     await session.start(
         room=ctx.room,
-        agent=GalacticVoiceAgent(),
+        agent=GalacticVoiceAgent(
+            name=f"{result['first_name']} {result['last_name']}" if result else None
+        ),
         room_input_options=RoomInputOptions(
             # LiveKit Cloud enhanced noise cancellation
             # - If self-hosting, omit this parameter
@@ -687,47 +717,13 @@ async def entrypoint(ctx: agents.JobContext):
     await session.generate_reply()
 
 
-# async def job_request_handler(req: JobRequest):
-#     logger.info(f"Received job request: {req}")
-#     logger.info(f"Received job request: {req.id}")
-#     logger.info(f"Room: {req.room.name}")
-#     logger.info(f"Participant: {req.job}")
-
-#     try:
-#         # Extract phone number from the job metadata or participant info
-#         # The phone number might be in req.publisher attributes or metadata
-#         phone_number = None
-
-#         if req.publisher and req.publisher.attributes:
-#             phone_number = req.publisher.attributes.get("sip.phoneNumber")
-
-#         if phone_number:
-#             logger.info(f"Fetching lead info for: {phone_number}")
-
-#             # Make your API call while the call is still ringing
-#             # lead_info = await fetch_lead_info(phone_number)
-
-#             # Accept the job only after getting lead info
-#             await req.accept(
-#                 name="GalacticVoiceAgent",
-#                 metadata=json.dumps({"lead_info": "lead_info"}),
-#             )
-#             logger.info("Job accepted with lead info")
-#         else:
-#             # Reject if no phone number found
-#             await req.reject()
-#             logger.warning("Job rejected - no phone number found")
-
-#     except Exception as e:
-#         logger.error(f"Error processing job request: {e}")
-#         await req.reject()
-
-
 if __name__ == "__main__":
     agents.cli.run_app(
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
             agent_name="incoming-call-agent",
-            # request_fnc=job_request_handler,
+            load_threshold=0.95,
+            num_idle_processes=5,
+            prewarm_fnc=prewarm_fnc,
         )
     )
