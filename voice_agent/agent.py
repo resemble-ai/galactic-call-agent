@@ -23,6 +23,7 @@ from livekit.plugins import (
     silero,
     resemble,
     elevenlabs,
+    google,
 )
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.protocol import sip as proto_sip
@@ -57,48 +58,62 @@ class GalacticVoiceAgent(Agent):
             greeting = "Hey there, I'm calling from Galactic Consumer Service regarding your account."
 
         return f"""
-            You are a professional debt relief specialist from Galactic Consumer Service. Your goal is to:
-            1. Verify the customer has credit card debt
-            2. Collect three pieces of information
-            3. Transfer qualified customers to a specialist
+                    <role>You are a professional debt relief specialist from Galactic Consumer Service</role>
+                    <goals>
+                    <goal>Verify the customer has credit card debt</goal>
+                    <goal>Collect three pieces of qualification information</goal>
+                    <goal>Transfer qualified customers to a specialist</goal>
+                    </goals>
 
-            ## CRITICAL CONVERSATION FLOW:
+                    <conversation_flow>
+                    <step number="1">
+                        <name>Initial Greeting</name>
+                        <action>{greeting}</action>
+                        <follow_up>Per our records, it looks like you have more than $7,000 in credit card debt and you've been making payments on time. Is that correct?</follow_up>
+                    </step>
+                    
+                    <step number="2">
+                        <name>If user confirms they have credit card debt</name>
+                        <actions>
+                        <action>Call collect_qualification_info() only once</action>
+                        <action>Ask the three qualification questions returned by the function</action>
+                        <action>Wait for answers to each before moving on</action>
+                        <action>Do NOT call collect_qualification_info again</action>
+                        </actions>
+                    </step>
+                    
+                    <step number="3">
+                        <name>Once all three answers are collected</name>
+                        <response>Perfect! Based on your situation, you qualify for significant savings. I need to get you to a specialist RIGHT NOW to lock in these rates. Can I transfer you? It takes just 10 seconds...</response>
+                    </step>
+                    
+                    <step number="4">
+                        <name>If user consents (Yes/OK/Sure)</name>
+                        <action>Call transfer_call_to_galactic() only once</action>
+                    </step>
+                    </conversation_flow>
 
-            1. **Initial Greeting**: 
-            {greeting}
-            # Only after user validates its identity, then go further otherwise use "end_call"
-            Per our records, it looks like you have more than $7,000 in credit card debt 
-            and you've been making payments on time. Is that correct?"
+                    <objection_handling>
+                    <rule>If the user expresses ANY objection, use the corresponding handle_[objection] function — but only once per conversation</rule>
+                    <rule>If the user raises multiple objections at once, pick only the most important one to handle</rule>
+                    <rule>After handling an objection, return to the main flow (continue collecting info or ask for transfer)</rule>
+                    </objection_handling>
 
-            2. **If YES or confirms debt**: 
-            - Use the collect_qualification_info function ONCE
-            - The function will tell you to ask three questions
-            - Ask those questions and wait for answers
-            - DO NOT call collect_qualification_info again
+                    <function_call_rules>
+                    <rule>Only call collect_qualification_info() once per session</rule>
+                    <rule>Only call handle_[objection] once per session</rule>
+                    <rule>Only call transfer_call_to_galactic() once per session</rule>
+                    <rule>Do NOT call the same function more than once</rule>
+                    <rule>If a function has already been called, continue the flow without repeating it</rule>
+                    </function_call_rules>
 
-            3. **After getting all three answers**: 
-            "Perfect! Based on your situation, you qualify for significant savings. 
-            I need to get you to a specialist RIGHT NOW to lock in these rates. 
-            Can I transfer you? It takes just 10 seconds..."
-
-            4. **If they consent (Yes/OK/Sure)**: Use transfer_call_to_galactic ONCE
-
-            ## IMPORTANT RULES:
-            - Only call collect_qualification_info ONCE per conversation
-            - After calling it, ask the questions it suggests and continue the conversation
-            - Do not repeatedly call the same function
-            - For objections, use the appropriate handle_[objection] function ONCE
-            - After handling objections, return to the conversation flow
-
-            ## OBJECTION HANDLING:
-            - For ANY objection, use the appropriate handle_[objection] function
-            - After handling, return to collecting info or pushing for transfer
-            - Be persistent but professional
-
-            ## REMEMBER:
-            - Each function should only be called ONCE when needed
-            - Get all three pieces of info before attempting transfer
-            - Always get explicit consent before transferring
+                    <reminders>
+                    <reminder>Be professional and persistent</reminder>
+                    <reminder>Never transfer without explicit user consent</reminder>
+                    <reminder>Always collect all three qualification responses before offering the transfer</reminder>
+                    <reminder>Do NOT call the same function more than once</reminder>
+                    <reminder>If the user raises multiple objections at once, pick only the most important one to handle</reminder>
+                    </reminders>
                 """
 
     async def transfer_call(
@@ -164,8 +179,9 @@ class GalacticVoiceAgent(Agent):
         total debt amount, number of credit cards, and employment status.
         """
         self.has_all_info = True  # Mark that we've attempted to collect the info
-        
+
         return """Ask these three questions together: "Great! To see how much we can save you, I need to verify three things: Your rough total credit card debt? How many credit cards with balances? And are you employed, self-employed, or retired?" Then wait for their response and continue the conversation."""
+
     # ========================================================================================================
     # ========================================================================================================
 
@@ -592,11 +608,22 @@ def prewarm_fnc(proc: agents.JobProcess):
 
     # Pre-initialize API clients (connection pooling)
     proc.userdata["deepgram_client"] = deepgram.STT(model="nova-2-phonecall")
-    proc.userdata["llm_client"] = openai.LLM.with_cerebras(model="llama-3.3-70b")
+    proc.userdata["llm_client"] = google.LLM(
+        model="gemini-2.5-flash-lite-preview-06-17",
+    )
     proc.userdata["tts_client"] = resemble.TTS(
         api_key=os.getenv("RESEMBLE_API_KEY"),
-        voice_uuid="e28236ee",
+        voice_uuid="332aece2",
     )
+
+    # proc.userdata["tts_client"] = cartesia.TTS(
+    #     api_key=os.getenv("CARTESIA_API_KEY"),
+    #     voice="f786b574-daa5-4673-aa0c-cbe3e8534c02",
+    # )
+    # proc.userdata["tts_client"] = elevenlabs.TTS(
+    #     api_key="sk_e09e83bf20fd499d5b983625b670e9bb6484ea3b4da70f1e",
+    #     voice_id="NwhlWbOasPHy5FAy7b7U",
+    # )
 
 
 async def entrypoint(ctx: agents.JobContext):
@@ -748,8 +775,8 @@ if __name__ == "__main__":
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
             agent_name="incoming-call-agent",
-            load_threshold=0.95,
-            num_idle_processes=5,
+            load_threshold=0.75,
+            num_idle_processes=10,
             prewarm_fnc=prewarm_fnc,
         )
     )
