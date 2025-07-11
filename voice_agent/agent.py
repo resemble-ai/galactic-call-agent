@@ -138,6 +138,16 @@ class GalacticVoiceAgent(Agent):
             logger.info(f"Successfully transferred participant {participant_identity}")
             await update_lead(lead_id=self.lead_id, comments="QUALIFIED")
             await self.hangup()
+            
+            
+    @function_tool
+    async def play_confirmation_sound(self):
+        """Play confirmation sound"""  # Shorter description
+        # Instead of: "Play a confirmation sound instead of using TTS"
+                
+        play_handle = self.background_audio.play("./audio_tools/handle_card_closure_question.wav", loop=False)
+        await play_handle
+        return "Sound played"
 
     @function_tool()
     async def transfer_call_to_galactic(self):
@@ -166,19 +176,6 @@ class GalacticVoiceAgent(Agent):
 
         await self.transfer_call(identity, transfer_number, room_name)
         return f"Transferring your call. Hang in there."
-
-    # ========================================================================================================
-    # ========================================================================================================
-
-    @function_tool()
-    async def collect_qualification_info(self):
-        """
-        Collects all three required pieces of information from the customer:
-        total debt amount, number of credit cards, and employment status.
-        """
-        self.has_all_info = True  # Mark that we've attempted to collect the info
-
-        return """Ask these three questions together: "Great! To see how much we can save you, I need to verify three things: Your rough total credit card debt? How many credit cards with balances? And are you employed, self-employed, or retired?" Then wait for their response and continue the conversation."""
 
     # ========================================================================================================
     # ========================================================================================================
@@ -728,7 +725,7 @@ async def entrypoint(ctx: agents.JobContext):
     agent_instance = GalacticVoiceAgent(
         f"{result['first_name']} {result['last_name']}" if result else None,
         result["lead_id"] if result else None,
-        background_audio,
+        background_audio
     )
 
     await session.start(
