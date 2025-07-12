@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import json
 import logging
+import aiohttp
 from dotenv import load_dotenv
 import os
 from livekit import agents, api, rtc
@@ -26,8 +28,11 @@ from livekit.plugins import (
     elevenlabs,
     google,
 )
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.plugins.turn_detector.english import EnglishModel
 from livekit.protocol import sip as proto_sip
+from livekit.agents.utils.audio import audio_frames_from_file
+from livekit.plugins.resemble import SynthesizeStream
+from livekit.agents import utils, tts, tokenize
 
 from get_lead_info import get_lead_info
 from update_lead import update_lead
@@ -42,7 +47,75 @@ IS_DEV = ENV == "development"
 
 if IS_DEV:
     from metrics_csv_logger import MetricsCSVLogger
+    
+# Store the original _run_ws method
+original_run_ws = SynthesizeStream._run_ws
 
+async def patched_run_ws(self, input_stream: tokenize.SentenceStream, output_emitter: tts.AudioEmitter) -> None:
+    segment_id = utils.shortuuid()
+    output_emitter.start_segment(segment_id=segment_id)
+
+    last_index = 0
+    input_ended = False
+
+    async def _send_task(ws: aiohttp.ClientWebSocketResponse) -> None:
+        nonlocal input_ended, last_index
+        async for data in input_stream:
+            last_index += 1
+            payload = {
+                "voice_uuid": self._opts.voice_uuid,
+                "data": f"<speak exaggeration='0.7'>{data.token}</speak>",  # Modified line
+                "request_id": last_index,
+                "sample_rate": self._opts.sample_rate,
+                "precision": "PCM_16",
+                "output_format": "mp3",
+            }
+            self._mark_started()
+            await ws.send_str(json.dumps(payload))
+
+        input_ended = True
+
+    async def _recv_task(ws: aiohttp.ClientWebSocketResponse) -> None:
+        while True:
+            msg = await ws.receive()
+            if msg.type in (
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+            ):
+                raise RuntimeError("Resemble connection closed unexpectedly")
+
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                # logger.warning("Unexpected Resemble message type %s", msg.type)
+                continue
+
+            data = json.loads(msg.data)
+            if data.get("type") == "audio":
+                if data.get("audio_content", None):
+                    b64data = base64.b64decode(data["audio_content"])
+                    output_emitter.push(b64data)
+
+            elif data.get("type") == "audio_end":
+                index = data["request_id"]
+                if index == last_index and input_ended:
+                    output_emitter.end_segment()
+                    break
+            else:
+                # logger.error("Unexpected Resemble message %s", data)
+                pass
+
+    async with self._tts._pool.connection(timeout=self._conn_options.timeout) as ws:
+        tasks = [
+            asyncio.create_task(_send_task(ws)),
+            asyncio.create_task(_recv_task(ws)),
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            await utils.aio.gracefully_cancel(*tasks)
+
+# Apply the monkey patch
+SynthesizeStream._run_ws = patched_run_ws
 
 class GalacticVoiceAgent(Agent):
 
@@ -55,63 +128,128 @@ class GalacticVoiceAgent(Agent):
 
     def _generate_instruction(self):
         if self.name is not None:
-            greeting = f"Hey there, Am I speaking to {self.name}. I'm calling from Galactic Consumer Service."
+            greeting = f"Hi {self.name}. I'm calling from Galactic Consumer Service."
         else:
-            greeting = "Hey there, I'm calling from Galactic Consumer Service regarding your account."
+            greeting = "Hey there, I'm calling from Galactic Consumer Service."
 
         return f"""
-                # Role
-                You are Lily, a professional debt relief specialist from Consumer Services
+                   # Role
+                    You are Lily, a professional debt relief specialist from Galactic Consumer Services. Insert "umms", "uhhs", and "lets see here" as needed to make the conversation more natural. Don't speak too many sentences at once, be consice.
 
-                # Tone
-                Be professional yet conversational. Show empathy for financial struggles while confidently presenting solutions. Stay persistent but respectful.
-                
+                    # Tone
+                    Be professional yet conversational. Show empathy for financial struggles while confidently presenting solutions. Stay persistent but respectful.
+                    
+                    # Conversation Flow
+                    Your general script is as follows:
 
-                # Conversation Flow
+                    1. {greeting}. I'm reaching out to you today because per our records it looks like you still have more than seven thousand dollars in credit card debt and you've been making your monthly payments on time, right?
 
-                ## 1. Greeting and Initial Verification
-                Say: "{greeting}, the reason for my call is we see in our records that you are making your monthly payments on time but you still carry a balance of over 7000 dollars on your credit cards....Correct!"
+                    <wait-for-response>
+                    DO NOT SAY: The response should be either a yes or no.
+                    </wait-for-response>
 
-                Wait for response.
+                    2. Thank you. Based on your track record of making payments and your situation, uhm, your total debts can be reduced by twenty to fourty percent and you'll be on a zero interest monthly payment plan. So for example, if you owe twenty thousand dollars, you'll save eight thousand. Which you dont have to pay back, ever! Thats your savings. So you'll end up paying back only half of what you owe. Not only that, but uhm, your monthly payments can be reduced by almost half as well.  This will help you get out of debt must faster instead of, you know,  paying it for years. To give you more information, you're the one handling the bills on these credits cards, correct?
 
-                ## 2. Value Proposition
-                If they confirm having credit card debt, say: "Now based on your situation, we are offering some aggressive debt savings options under which your debts can be reduced by 20 to 40% and you can be on a zero interest payment plan. For an example, if you owe 20000 dollars, under these options you end up saving almost 8000 which you never have to pay back, that's your savings."
+                    <wait-for-response>
+                    DO NOT SAY: The response should be either a yes or no.
+                    </wait-for-response>
 
-                ## 3. Critical Questions (MUST ASK ALL THREE IN ORDER)
-                    ### Question 1: Decision Maker
-                    Ask: "To give you more information about the options, I am sure you are the one handling the bills on these credit cards...correct?"
-                    - If YES → Continue to Question 2
-                    - If NO → Ask who handles the bills and get them on the call or schedule a callback
+                    3a. IF last response was no:
+                    Oh got it, I thought you were handling the bills on these credit cards. But no worries, the offer still applies. Could you put the person who handles the bills on the phone or otherwise we could schedule a call back at a later time.
 
-                    ### Question 2: Debt Amount (CRITICAL - DO NOT SKIP)
-                    Ask: "As I told you earlier, your savings can be significant under these options, to let you know more about your options, roughly how much do you owe on all your credit cards combined.....like $15000, 20000 or more?"
-                    - Capture the numeric amount as total_debt
-                    - If hesitant → Probe gently for an approximate range
-                    - WAIT for their answer before proceeding
+                    3b. IF last response was yes:
+                    As I told you earlier, your savings can be significant under these options, to let you know more about your options, roughly how much do you owe on all your credit cards combined, is it like fifteen thousand, twenty thousand or more? 
 
-                    ### Question 3: Debt Type
-                    Ask: "And I am sure, all these are unsecured debts, no collateral attached to them, correct?"
-                    - If YES → Proceed to closing
-                    - If NO → Ask how much is only unsecured debt, update total_debt accordingly
+                    4. And I am sure, all these are unsecured debts, no collateral attached to them, correct? 
 
-                ## 4. Closing and Transfer
-                Once all three questions are answered:
-                1. Say: "Alright, that's all the information we require"
-                2. Calculate: reduced_amount = total_debt × 0.6
-                3. Say: "Now it's our turn to let you know how your total debts from $[total_debt] can be brought down to $[reduced_amount] and how can you be at zero interest at a monthly payment which might be lower than what you are paying right now..."
-                4. Say: "Please hold on" and immediately call transfer_call_to_galactic()
+                    <wait-for-response>
+                    DO NOT SAY: The response should be a yes or no.
+                    </wait-for-response>
 
-                # Objection Handling
-                - If the user expresses ANY objection, use the appropriate handle_[objection] function
-                - Only call ONE objection handler per conversation
-                - After handling objection, return to where you left off in the main flow
+                    5a. IF last response was no, drill down to how much is only unsecured debt.
 
-                # Critical Rules
-                1. **NEVER SKIP QUESTION 2** - You MUST ask about the debt amount
-                2. Ask all three questions IN ORDER
-                3. Wait for each answer before proceeding
-                4. Only transfer after collecting all three answers
-                5. Transfer immediately after the closing statement
+                    5b. IF last response was yes:
+                    Alright, that's all the information we require, now it's our turn to let you know how your total debts can be brought down by upto 40% and how can you be at zero interest at a monthly payment which might be lower than what you are paying right now...please hold on 
+                    
+                    # Objection and question  handling
+
+                    ## When customer mentions secured loans or other debt type not covered by the program (HELOC, Mortgage, Auto Loans, Payday loans, Medical bills, Utility bills, Home Improvement Loans, Solar Loans).
+                    You should explain that you specifically work with unsecured debt like credit cards. For secured loans like mortgages or  auto loans, inform them they'd need to work directly with  those lenders.
+
+                    ## When customer claims they have no debt. Confirms whether they truly have no qualifying unsecured debt over $7,000.
+                    You should acknowledge this positively and then confirm by asking if they have any unsecured debt like credit cards,  medical bills, or personal loans over $7,000.
+
+                    ## When customer asks how the company obtained the customer's contact information
+                    You should explain that their information likely came through a financial inquiry they made online, such as a debt help form, loan search, or credit evaluation. Emphasize that you only reach  out to people who've shown interest in financial relief options and don't cold call randomly.
+
+                    ## When customer is angry or suspicious about the call's legitimacy
+                    You should acknowledge their concern and express understanding. Offer to mark their file as not interested if they prefer, while maintaining professionalism.
+
+                    ## When customer says they're not interested
+                    You should attempt to re-engage by asking if they've already resolved their debts or if they're just not sure what this is about yet. Keep it brief and respectful.
+
+                    ## When customer complains about multiple calls
+                    You should apologize for any excessive calling and explain it's not intentional. Offer to mark them as not interested to prevent future calls.
+
+                    ## When customer thinks this might be a scam
+                    You should establish credibility by explaining you're a licensed service provider walking through legitimate debt reduction options. Mention you're not asking for any personal information upfront.
+
+                    ## When customer is already in another debt relief program
+                    You should acknowledge this positively and mention that sometimes people find they can reduce payments or shorten terms by comparing programs. Ask who they're working with.
+
+                    ## When customer asks for basic explanation of how the program works
+                    You should explain that you connect them to a program that lowers overall debt into one manageable monthly plan with no loans or credit pulls involved.
+
+                    ## When person claims wrong number
+                    You should attempt to salvage by briefly mentioning you provide free advice on lowering credit card interest if they have any debt, before ending the call politely.
+
+                    ## When customer says finances are none of your business
+                    You should respond professionally explaining you're offering free advice on reducing debt with no obligation. Respect their privacy while keeping the door open.
+
+                    ## When customer wants company verification
+                    You should provide that you're based in Boca Raton, Florida, and licensed in 49 states. Offer to provide more verification if needed.
+
+                    ## When customer wants detailed program information
+                    You should explain that you use debt mediation techniques with pre-negotiated rates to reduce debts. Emphasize the personalized approach based on their specific situation.
+
+                    ## When customer wants everything in writing first
+                    You should explain they'll receive tailored information once prequalified. The initial conversation helps determine the best options for their specific situation.
+
+                    ## When customer mentions do-not-call list
+                    You should immediately apologize and assure them you'll add them to the company's do-not-call list right away. End the call respectfully.
+
+                    ## When customer asks about closing credit cards
+                    You should explain they can choose which cards to keep or close. Mention that closing most cards helps get out of debt faster, but it's their choice.
+
+                    ## When customer questions the 40% savings claim
+                    You should explain that you negotiate with creditors using established relationships and pre-negotiated rates. Results vary based on individual situations.
+
+                    ## When customer asks about tax implications
+                    You should explain that credit card companies usually don't report forgiven debt to IRS. Recommend consulting their CPA if they have specific tax concerns.
+
+                    ## When customer says they can't afford anything
+                    You should empathetically explain that this program reduces monthly obligations, not adds to them. Focus on how it makes their debt more manageable.
+
+                    ## When customer is skeptical about catches
+                    You should reassure there's no catch, just an option for individuals in hardship to lower debt. Emphasize the free consultation with no obligation.
+
+                    ## When customer wants to handle debt themselves
+                    You should acknowledge that some try handling it alone but explain your team's daily creditor experience typically gets better results and saves more money.
+
+                    ## When customer wants to postpone
+                    You should agree to call back but first check if they have unsecured debt, emphasizing it only takes minutes and could save thousands. Get a specific callback time.
+
+                    ## When customer says debt is already handled
+                    You should respond positively and ask who they're working with. Mention potential for better savings or shorter terms through comparison.
+
+                    ## When customer worries about credit score impact
+                    You should honestly explain credit may be impacted but focus on the long-term improvement of becoming debt-free. Emphasize rebuilding is easier without debt burden.
+
+                    ## When customer asks if this is a loan
+                    You should clearly state it's not a loan or new credit line, just restructuring current debt into something manageable without borrowing more money.
+
+                    ## Transfer the call
+                    Once all qualifying information has been collected (debt amount over $7,000, unsecured debt confirmed, decision maker identified), transfer the call to the Galactic team for detailed program enrollment. Use "transfer_call_to_galactic"
                 """
 
     async def transfer_call(
@@ -139,16 +277,6 @@ class GalacticVoiceAgent(Agent):
             await update_lead(lead_id=self.lead_id, comments="QUALIFIED")
             await self.hangup()
             
-            
-    @function_tool
-    async def play_confirmation_sound(self):
-        """Play confirmation sound"""  # Shorter description
-        # Instead of: "Play a confirmation sound instead of using TTS"
-                
-        play_handle = self.background_audio.play("./audio_tools/handle_card_closure_question.wav", loop=False)
-        await play_handle
-        return "Sound played"
-
     @function_tool()
     async def transfer_call_to_galactic(self):
         """Transfer the call to the Galactic team."""
@@ -176,396 +304,6 @@ class GalacticVoiceAgent(Agent):
 
         await self.transfer_call(identity, transfer_number, room_name)
         return f"Transferring your call. Hang in there."
-
-    # ========================================================================================================
-    # ========================================================================================================
-
-    @function_tool()
-    async def handle_excluded_loans(self):
-        """
-        Responds when customer mentions secured loans or other debt types
-        not covered by the program (HELOC, Mortgage, Auto Loans, Payday loans,
-        Medical bills, Utility bills, Home Improvement Loans, Solar Loans).
-        """
-
-        prompt = """
-        You should explain that you specifically work with unsecured 
-        debt like credit cards. For secured loans like mortgages or 
-        auto loans, inform them they'd need to work directly with 
-        those lenders.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_no_debt(self):
-        """
-        Responds when customer claims they have no debt. Confirms whether
-        they truly have no qualifying unsecured debt over $7,000.
-        """
-
-        prompt = """
-        You should acknowledge this positively and then confirm by 
-        asking if they have any unsecured debt like credit cards, 
-        medical bills, or personal loans over $7,000.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_info_source_question(self):
-        """
-        Explains how the company obtained the customer's contact information
-        when they ask about the source of their data.
-        """
-
-        prompt = """
-        You should explain that their information likely came through 
-        a financial inquiry they made online, such as a debt help form, 
-        loan search, or credit evaluation. Emphasize that you only reach 
-        out to people who've shown interest in financial relief options 
-        and don't cold call randomly.
-        """
-
-        return prompt
-
-    @function_tool()
-    async def handle_angry_suspicious(self):
-        """
-        De-escalates situations where customers are angry or suspicious
-        about the call's legitimacy.
-        """
-
-        prompt = """
-        You should acknowledge their concern and explain that you don't 
-        cold-call. Mention the information came through a financial lead 
-        partner where someone expressed interest in debt relief options. 
-        Offer to mark their file as not interested and remove it 
-        immediately if they prefer.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_not_interested(self):
-        """
-        Attempts to re-engage customers who initially express no interest
-        by understanding their specific situation.
-        """
-
-        prompt = """
-        You should acknowledge their response and ask if it's because 
-        they've already resolved their debts or just aren't sure what 
-        this is about yet. Mention that many people say the same thing 
-        until they hear how much they might save, and that it only 
-        takes a couple minutes with no pressure.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_repeated_calls(self):
-        """
-        Addresses customer complaints about receiving multiple calls
-        from the company.
-        """
-
-        prompt = """
-        You should apologize for any excessive calling and explain it's 
-        not intentional. Explain you reach out to individuals who showed 
-        potential eligibility for debt relief, and the system may retry 
-        if you haven't connected. Offer to mark them as not interested 
-        but first ask if they'd like to quickly hear if they qualify, 
-        as it could save them thousands.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_scam_concern(self):
-        """
-        Addresses customer concerns that this might be a scam by
-        establishing credibility and legitimacy.
-        """
-
-        prompt = """
-        You should acknowledge that phone scams are common these days. 
-        Explain you're a licensed service provider and this isn't a 
-        sales pitch. Clarify your goal is to walk through legitimate 
-        debt reduction options available under federal and state programs, 
-        and that they aren't agreeing to anything today - just getting 
-        information they deserve to know.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_existing_program(self):
-        """
-        Responds when customer mentions they're already enrolled in
-        another debt relief program.
-        """
-
-        prompt = """
-        You should acknowledge positively that they're already taking 
-        action. Ask how long they've been working with the other program. 
-        Mention that sometimes people compare their current program with 
-        yours and find they can actually reduce monthly payments or 
-        shorten the term.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_how_it_works(self):
-        """
-        Explains the basic mechanics of how the debt relief program
-        functions when customers ask for clarification.
-        """
-
-        prompt = """
-        You should explain that based on their current debt and income, 
-        you connect them to a program that helps lower the overall amount 
-        they're responsible for and rolls everything into one manageable 
-        monthly plan. Emphasize there are no loans and no credit pulls - 
-        just a smarter way to get back in control.
-        """
-
-        return prompt
-
-    # ========================================================================================================
-    # ========================================================================================================
-    @function_tool()
-    async def handle_wrong_number(self):
-        """
-        Responds when the person claims it's a wrong number or they're not
-        the right party. Attempts to salvage the call if they have debt.
-        """
-
-        prompt = """
-        You should politely acknowledge the confusion and briefly mention 
-        that you provide free advice on lowering credit card interest rates 
-        and balances. If they owe money on credit cards, offer to help them 
-        instead. Keep it brief and non-pushy.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_none_of_your_business(self):
-        """
-        Responds professionally when customer says their finances are
-        none of the company's business.
-        """
-
-        prompt = """
-        You should remain professional and briefly explain you're offering 
-        free advice on reducing debt and eliminating future interest rates. 
-        Emphasize it's a no-obligation call and respect their privacy.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_company_info_request(self):
-        """
-        Provides company address or phone number when customer requests
-        verification of legitimacy.
-        """
-
-        prompt = """
-        You should explain that you're based in Boca Raton, Florida, and 
-        licensed in 49 states. Offer to connect them with a debt counselor 
-        for more specific details if they need additional verification.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_program_details(self):
-        """
-        Explains how the debt relief program works when customer wants
-        more detailed information.
-        """
-
-        prompt = """
-        You should explain that you use debt mediation techniques with 
-        pre-negotiated rates to reduce their debts, working with any 
-        creditor. Keep the explanation simple but comprehensive.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_written_info_request(self):
-        """
-        Responds when customer wants everything in writing before
-        proceeding with verbal discussion.
-        """
-
-        prompt = """
-        You should explain that once prequalified, they'll receive 
-        tailored information to review. Mention you're available for 
-        any real-time questions they might have about the process.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_do_not_call(self):
-        """
-        Apologizes and takes action when customer mentions they're
-        on the do-not-call list.
-        """
-
-        prompt = """
-        You should immediately apologize for calling and assure them 
-        you'll add them to your company's do-not-call list right away. 
-        Be brief and respectful.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_card_closure_question(self):
-        """
-        Explains the credit card closure policy when customer asks
-        if they need to close all their cards.
-        """
-
-        prompt = """
-        You should explain they can choose which cards to keep or close. 
-        Mention that your goal is to reduce their debt, and closing most 
-        cards will help them get out of debt faster, but it's ultimately 
-        their choice.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_savings_question(self):
-        """
-        Explains how the company achieves 40% savings when customer
-        questions the specific percentage claims.
-        """
-
-        prompt = """
-        You should explain that you negotiate with creditors to reduce 
-        debts based on your relationships, pre-negotiated rates, and 
-        industry trends. Be confident but not overly specific about 
-        proprietary methods.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_tax_consequences(self):
-        """
-        Addresses customer concerns about tax implications of
-        debt forgiveness.
-        """
-
-        prompt = """
-        You should explain that credit card companies usually don't 
-        report forgiven debt to the IRS, but recommend they consult 
-        a CPA if they receive a 1099 form. Be clear you're not 
-        providing tax advice.
-        """
-        return prompt
-
-    # ========================================================================================================
-    # ========================================================================================================
-    @function_tool()
-    async def handle_cannot_afford(self):
-        """
-        Responds when customer says they can't afford anything right now,
-        addressing their financial concerns about taking on new obligations.
-        """
-
-        prompt = """
-        You should empathetically acknowledge their struggle and explain 
-        that's exactly why you're calling. Emphasize this program is 
-        designed to reduce their overall monthly obligation, not add to it. 
-        Clarify it's not a loan but a way to regain control of their finances.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_whats_the_catch(self):
-        """
-        Addresses customer skepticism when they ask what the catch is,
-        building trust by explaining the straightforward nature of the program.
-        """
-
-        prompt = """
-        You should reassure them there's no catch - just an option for 
-        individuals in hardship to lower what they owe and make it manageable 
-        again. Explain you're simply checking to see if they qualify, with 
-        no hidden agenda.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_diy_objection(self):
-        """
-        Responds when customer claims they can handle debt relief themselves
-        without paying for services.
-        """
-
-        prompt = """
-        You should acknowledge that some people do try on their own, but 
-        explain they usually don't get the same results. Emphasize that 
-        your team works with creditors every day and knows how to make 
-        these programs work in their favor.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_call_me_later(self):
-        """
-        Manages situations where customer wants to postpone the conversation,
-        attempting to keep them engaged if they have qualifying debt.
-        """
-
-        prompt = """
-        You should politely agree to call back but first ask if they're 
-        dealing with unsecured debt right now or have already taken care 
-        of it. If they confirm they have credit card debts, try to keep 
-        them on the line by emphasizing it will only take a few minutes 
-        and could save them thousands.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_already_handled(self):
-        """
-        Responds when customer claims they've already got their debt
-        situation handled, exploring if there's still opportunity to help.
-        """
-
-        prompt = """
-        You should respond positively and ask who they're working with. 
-        Mention that sometimes people compare programs and realize they 
-        can save more or shorten the term with your program. Don't be 
-        pushy but plant the seed of potential better options.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_credit_impact(self):
-        """
-        Addresses customer concerns about how the program will affect
-        their credit score.
-        """
-
-        prompt = """
-        You should be honest that their credit may be impacted, but 
-        point out that most people you help already have high balances 
-        affecting their score. Emphasize your goal is long-term 
-        improvement, not a quick fix. Focus on the bigger picture of 
-        becoming debt-free.
-        """
-        return prompt
-
-    @function_tool()
-    async def handle_is_this_a_loan(self):
-        """
-        Clarifies that the program is not a loan when customers
-        express concern about taking on new debt.
-        """
-
-        prompt = """
-        You should clearly state it's not a loan and there's no new 
-        credit line. Explain you simply work with what they currently 
-        owe and restructure it into something manageable. Emphasize 
-        this is about reducing debt, not creating more.
-        """
-        return prompt
 
     # ========================================================================================================
     # ========================================================================================================
@@ -654,8 +392,8 @@ async def entrypoint(ctx: agents.JobContext):
     except Exception as e:
         logger.error(f"Error waiting for participant: {e}")
 
-    vad = ctx.proc.userdata["vad"]
-    turn_detection = MultilingualModel()
+    # vad = ctx.proc.userdata["vad"]
+    turn_detection = EnglishModel()
     stt = ctx.proc.userdata["deepgram_client"]
     llm = ctx.proc.userdata["llm_client"]
     tts = ctx.proc.userdata["tts_client"]
@@ -664,7 +402,7 @@ async def entrypoint(ctx: agents.JobContext):
         stt=stt,
         llm=llm,
         tts=tts,
-        vad=vad,
+        # vad=vad,
         turn_detection=turn_detection,
     )
 
@@ -774,7 +512,7 @@ if __name__ == "__main__":
             entrypoint_fnc=entrypoint,
             agent_name="incoming-call-agent",
             load_threshold=0.75,
-            num_idle_processes=10,
+            # num_idle_processes=10,
             prewarm_fnc=prewarm_fnc,
         )
     )
