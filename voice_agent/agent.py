@@ -341,13 +341,8 @@ def prewarm_fnc(proc: agents.JobProcess):
 
     # Pre-initialize API clients (connection pooling)
     proc.userdata["deepgram_client"] = deepgram.STT(model="nova-2-phonecall")
-    proc.userdata["llm_client"] = google.LLM(
-        model="gemini-2.5-flash-lite-preview-06-17",
-    )
-    proc.userdata["tts_client"] = resemble.TTS(
-        api_key=os.getenv("RESEMBLE_API_KEY"),
-        voice_uuid="332aece2",
-    )
+    proc.userdata["llm_client"] = openai.LLM.with_cerebras(model="llama-3.3-70b")
+    proc.userdata["tts_client"] = resemble.TTS(api_key=os.getenv("RESEMBLE_API_KEY"), voice_uuid="3c089e29", sample_rate=24000)
 
     # proc.userdata["tts_client"] = cartesia.TTS(
     #     api_key=os.getenv("CARTESIA_API_KEY"),
