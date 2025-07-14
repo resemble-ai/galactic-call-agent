@@ -7,6 +7,40 @@ from livekit.agents import (
     metrics,
 )
 
+import asyncio
+import json
+import logging
+from dotenv import load_dotenv
+import os
+from livekit import agents, api, rtc
+from livekit.agents import (
+    AgentSession,
+    Agent,
+    BackgroundAudioPlayer,
+    JobRequest,
+    MetricsCollectedEvent,
+    RoomInputOptions,
+    RunContext,
+    function_tool,
+    get_job_context,
+    metrics,
+)
+from livekit.plugins import (
+    openai,
+    cartesia,
+    deepgram,
+    noise_cancellation,
+    silero,
+    resemble,
+    elevenlabs,
+    google,
+)
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.protocol import sip as proto_sip
+
+from get_lead_info import get_lead_info
+from update_lead import update_lead
+
 class GalacticVoiceAgent(Agent):
 
     def __init__(self, name, lead_id, background_audio) -> None:

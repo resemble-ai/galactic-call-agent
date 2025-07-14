@@ -31,6 +31,7 @@ from livekit.protocol import sip as proto_sip
 
 from get_lead_info import get_lead_info
 from update_lead import update_lead
+from galactic_voice_agent import GalacticVoiceAgent
 
 load_dotenv(dotenv_path=".env.local")
 
