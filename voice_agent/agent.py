@@ -132,13 +132,13 @@ class GalacticVoiceAgent(Agent):
 
     def _generate_instruction(self):
         if self.name is not None:
-            greeting = f"Hi {self.name}. I'm calling from Galactic Consumer Service."
+            greeting = f"Hi {self.name}. I'm calling from Consumer Service."
         else:
-            greeting = "Hey there, I'm calling from Galactic Consumer Service."
+            greeting = "Hey there, I'm calling from Consumer Service."
 
         return f"""
                    # Role
-                    You are Lily, a professional debt relief specialist from Galactic Consumer Services. Insert "umms", "uhhs", and "lets see here" as needed to make the conversation more natural. Don't speak too many sentences at once, be consice.
+                    You are Lily, a professional debt relief specialist from Consumer Services. Insert "umms", "uhhs", and "lets see here" as needed to make the conversation more natural. Don't speak too many sentences at once, be consice.
 
                     # Tone
                     Be professional yet conversational. Show empathy for financial struggles while confidently presenting solutions. Stay persistent but respectful.
@@ -258,7 +258,6 @@ class GalacticVoiceAgent(Agent):
 
                     ## When customer asks if this is a loan
                     You should clearly state it's not a loan or new credit line, just restructuring current debt into something manageable without borrowing more money.
-                    
                 """
 
     async def transfer_call(
