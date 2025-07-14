@@ -48,6 +48,10 @@ IS_DEV = ENV == "development"
 if IS_DEV:
     from metrics_csv_logger import MetricsCSVLogger
     
+# Override the Resemble WebSocket URL to use the galactic endpoint
+import livekit.plugins.resemble.tts as resemble_tts
+resemble_tts.RESEMBLE_WEBSOCKET_URL = "wss://galactic-ws.cluster.resemble.ai/stream"
+
 # Store the original _run_ws method
 original_run_ws = SynthesizeStream._run_ws
 
@@ -138,6 +142,13 @@ class GalacticVoiceAgent(Agent):
 
                     # Tone
                     Be professional yet conversational. Show empathy for financial struggles while confidently presenting solutions. Stay persistent but respectful.
+
+                    # General instructions
+                    - Insert "umms", "uhhs", and "lets see here" as needed to make the conversation more natural.
+                    - Don't speak too many sentences at once, be consice.
+                    - Dont repeat what the customer says.
+                    - Once you've collected all the information, transfer the call to the Galactic team for detailed program enrollment. Use "transfer_call_to_galactic". Do not ask to transfer, just do it.
+                    
                     
                     # Conversation Flow
                     Your general script is as follows:
