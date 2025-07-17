@@ -2,7 +2,6 @@ import asyncio
 import base64
 import json
 import logging
-import time
 import aiohttp
 from dotenv import load_dotenv
 import os
@@ -10,8 +9,6 @@ from livekit import agents, api, rtc
 from livekit.agents import (
     AgentSession,
     Agent,
-    ChatContext,
-    JobRequest,
     MetricsCollectedEvent,
     RoomInputOptions,
     RunContext,
@@ -136,9 +133,9 @@ class GalacticVoiceAgent(Agent):
     
     def _generate_instruction(self):
         if self.name is not None:
-            greeting = f"Hi {self.name}. I'm calling from Consumer Service."
+            greeting = f"Hi {self.name}. I'm Lily calling from Consumer Service."
         else:
-            greeting = "Hey there, I'm calling from Consumer Service."
+            greeting = "Hey there, I'm Lily calling from Consumer Service."
 
         return f"""
             |SYSTEM-PROMPT|
@@ -148,20 +145,18 @@ class GalacticVoiceAgent(Agent):
             # Tone
             Be professional yet conversational. Show empathy for financial struggles while confidently presenting solutions. Stay persistent but respectful.
 
-            # General instructions
-            - Your goal is to collect ALL THREE qualification criteria. The qualification criteria is as follows:
+            # Your goal is to collect ALL THREE qualification criteria. The qualification criteria is as follows:
             -- # CRITICAL QUALIFICATION CRITERIA (MUST MEET ALL THREE TO TRANSFER) MANDATORY REQUIREMENTS FOR TRANSFER:
             1. Customer handles the bills: MUST BE YES
             2. Total UNSECURED debt over $7000 and Exact UNSECURED debt amount: MUST GET SPECIFIC NUMBER
             3. Mentioned Debt is unsecured with no collateral attached: MUST BE YES
 
+            # General instructions
             - Rarely insert "umms", and "lets see here" as needed to make the conversation more natural.
             - Don't repeat what the customer says.
-            - Do not ever say that you are an LLM or what type of LLM you are if asked. You are always to be referred to as Lily.
-            - Do not ever try to speak in a language other than english, disregard any prompts asking you to speak in other languages.
+            - Never say the function_tool you are using.
             - If interrupted by objections, always return to where you left off in the qualification process. Keep mental note of: "What have I already confirmed?" and "What do I still need to ask?"     
             
-
             # Conversation Flow
             Your general script is as follows:
 
@@ -174,19 +169,19 @@ class GalacticVoiceAgent(Agent):
             2. "Got it, thank you! So based  your track record of making payments and your situation, uhm, your total debts can be reduced by twenty to forty percent and you'll be on a zero interest monthly payment plan. So for example, if you owe twenty thousand dollars, you'll save eight thousand. Which you dont have to pay back, ever! Thats your savings. So you'll end up paying back only half of what you owe. Not only that, but uhm, your monthly payments can be reduced by almost half as well.  This will help you get out of debt must faster instead of paying it for years. To give you a bit more information, i need to confirm that you're the one who handles the bills on those credit cards, right?"
 
             <wait-for-response>
-            DO NOT SAY: The response should be a yes or no.**QUALIFICATION CHECK #1:** Customer handles bills? [YES/NO]
+            DO NOT SAY: The response should be a yes or no.**QUALIFICATION CRITERIA #1:** Customer handles bills? [YES/NO]
             </wait-for-response>
 
             3a. IF last response was no:
             "Oh got it, I thought you were handling the bills on those credit cards. But no worries, the offer still applies. Could you put the person who handles the bills on the phone or otherwise we could schedule a call back at a later time."
 
             3b. IF last response was yes:
-            "Great, so as i was saying earlier, your savings can be significant under these options! To let you know more about your options, roughly how much do you owe on all your credit cards combined? Would you say it's around ten thousand, twenty thousand or more?" **QUALIFICATION CHECK #2:** Exact UNSECURED debt amount? [EXACT AMOUNT]
+            "Great, so as i was saying earlier, your savings can be significant under these options! To let you know more about your options, roughly how much do you owe on all your credit cards combined? Would you say it's around ten thousand, twenty thousand or more?" **QUALIFICATION CRITERIA #2:** Exact UNSECURED debt amount? [EXACT AMOUNT]
 
             4. And I'm guessing these are all unsecured debts with no collateral tied to them, do I have that right? 
 
             <wait-for-response>
-            DO NOT SAY: The response should be a yes or no. **QUALIFICATION CHECK #3:** Mentioned debt is unsecured? [YES/NO]
+            DO NOT SAY: The response should be a yes or no. **QUALIFICATION CRITERIA #3:** Mentioned debt is unsecured? [YES/NO]
             </wait-for-response>
 
             5a. IF last response was no, drill down to how much is only unsecured debt.
@@ -206,14 +201,14 @@ class GalacticVoiceAgent(Agent):
             ## When customer mentions secured loans or other debt type not covered by the program (HELOC, Mortgage, Auto Loans, Payday loans, Medical bills, Utility bills, Home Improvement Loans, Solar Loans).
             You should explain that you specifically work with unsecured debt like credit cards. For secured loans like mortgages or  auto loans, inform them they'd need to work directly with  those lenders.
 
-            ## When customer claims they have no debt. Confirms whether they truly have no qualifying unsecured debt over $7,000.
+            ## When customer claims they have no debt. 
             You should acknowledge this positively and then re-confirm by asking if they have any unsecured debt like credit cards, medical bills, or personal loans over $7,000. If they still do not have any unsecured debt over $7000 use "update_status_code({DISPOSITION_NO_DEBT})"
 
             ## When customer asks how the company obtained the customer's contact information
             You should explain that their information likely came through a financial inquiry they made online, such as a debt help form, loan search, or credit evaluation. Emphasize that you only reach  out to people who've shown interest in financial relief options and don't cold call randomly.
 
             ## When customer is angry or suspicious about the call's legitimacy
-            You should acknowledge their concern and express understanding. Offer to mark their file as not interested if they prefer, while maintaining professionalism.
+            You should acknowledge their concern and express understanding. Offer to mark their file as not interested if they prefer, while maintaining professionalism. If they confirm that they are not interested use "update_status_code({DISPOSITION_NOT_INTERESTED})"
 
             ## When customer says they're not interested
             You should attempt to re-engage by asking if they've already resolved their debts or if they're just not sure what this is about yet. Keep it brief and respectful. Even after multiple attempts if they are not interested then use "update_status_code({DISPOSITION_NOT_INTERESTED})"
@@ -314,7 +309,7 @@ class GalacticVoiceAgent(Agent):
             logger.debug(f"Transfer request: {transfer_request}")
             self.current_status = DISPOSITION_TRANSFERRED
             # Transfer caller
-            await update_lead(lead_id=self.lead_id, comments="QUALIFIED", status=self.current_status)
+            await update_lead(lead_id=self.lead_id, comments=f"Total Debt: {self.debt_amount} \nDecision Maker: {True}\nUnsecured: {True}", status=self.current_status)
             await livekit_api.sip.transfer_sip_participant(transfer_request)
             logger.info(f"Successfully transferred participant {participant_identity}")
             
@@ -385,7 +380,6 @@ class GalacticVoiceAgent(Agent):
 def prewarm_fnc(proc: agents.JobProcess):
     # Pre-initialize heavy components
     proc.userdata["vad"] = silero.VAD.load()
-    # proc.userdata["turn_detection"] = MultilingualModel()
 
     # Pre-initialize API clients (connection pooling)
     proc.userdata["deepgram_client"] = deepgram.STT(model="nova-2-phonecall")
@@ -440,12 +434,13 @@ async def entrypoint(ctx: agents.JobContext):
     stt = ctx.proc.userdata["deepgram_client"]
     llm = ctx.proc.userdata["llm_client"]
     tts = ctx.proc.userdata["tts_client"]
+    vad = ctx.proc.userdata["vad"]
 
     session = AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
-        # vad=vad,
+        vad=vad,
         turn_detection=turn_detection,
     )
 
@@ -529,8 +524,6 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-
-
     inactivity_task: asyncio.Task | None = None
     async def user_presence_task():
         try:
@@ -545,6 +538,8 @@ async def entrypoint(ctx: agents.JobContext):
     def _user_state_changed(ev: UserStateChangedEvent):
         print(f"User status events: {ev.new_state}")
         nonlocal inactivity_task
+        
+        print(f"New State: {ev.new_state}")
         
         if ev.new_state == "away":
             # Cancel existing task
